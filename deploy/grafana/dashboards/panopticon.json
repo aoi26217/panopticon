@@ -1,0 +1,328 @@
+{
+ "uid": "panopticon-load",
+ "title": "Panopticon \u2014 Load & Heartbeat",
+ "tags": [
+  "panopticon"
+ ],
+ "timezone": "browser",
+ "schemaVersion": 39,
+ "refresh": "5s",
+ "time": {
+  "from": "now-15m",
+  "to": "now"
+ },
+ "panels": [
+  {
+   "id": 1,
+   "type": "timeseries",
+   "title": "AIMD Limit Wave (ceiling vs in-flight)",
+   "description": "The breathing graph. A(t) hugging W(t) = saturated; A(t) briefly above W(t) = post-backoff drain (by design). aimd_admission_violations_total must stay 0.",
+   "gridPos": {
+    "h": 9,
+    "w": 12,
+    "x": 0,
+    "y": 0
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "panopticon-prom"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 8,
+      "showPoints": "never",
+      "spanNulls": true
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "panopticon-prom"
+     },
+     "expr": "panopticon_aimd_limit",
+     "legendFormat": "ceiling W(t)",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "panopticon-prom"
+     },
+     "expr": "panopticon_aimd_active",
+     "legendFormat": "in-flight A(t)",
+     "refId": "B"
+    }
+   ]
+  },
+  {
+   "id": 2,
+   "type": "timeseries",
+   "title": "TTFT vs 500 ms Budget",
+   "description": "p95 crossing the red line is the AIMD congestion signal \u2014 expect a multiplicative decrease within a window.",
+   "gridPos": {
+    "h": 9,
+    "w": 12,
+    "x": 12,
+    "y": 0
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "panopticon-prom"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "ms",
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 8,
+      "showPoints": "never",
+      "spanNulls": true,
+      "thresholdsStyle": {
+       "mode": "line"
+      }
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "red",
+        "value": 500
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "panopticon-prom"
+     },
+     "expr": "panopticon_ttft_ms{quantile=\"0.5\"}",
+     "legendFormat": "p50",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "panopticon-prom"
+     },
+     "expr": "panopticon_ttft_ms{quantile=\"0.95\"}",
+     "legendFormat": "p95",
+     "refId": "B"
+    }
+   ]
+  },
+  {
+   "id": 3,
+   "type": "timeseries",
+   "title": "MLFQ Starvation Watch (queue depth by level)",
+   "description": "Q0 must drain to zero between waves; a growing Q0 with idle A(t) means dispatch is broken, not the GPU. Q2/Q3 pooling under load is strict-priority working as intended.",
+   "gridPos": {
+    "h": 9,
+    "w": 12,
+    "x": 0,
+    "y": 9
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "panopticon-prom"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 8,
+      "showPoints": "never",
+      "spanNulls": true
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "panopticon-prom"
+     },
+     "expr": "panopticon_mlfq_depth{queue=\"interactive\"}",
+     "legendFormat": "Q0 interactive",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "panopticon-prom"
+     },
+     "expr": "panopticon_mlfq_depth{queue=\"cognitive\"}",
+     "legendFormat": "Q1 cognitive",
+     "refId": "B"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "panopticon-prom"
+     },
+     "expr": "panopticon_mlfq_depth{queue=\"background\"}",
+     "legendFormat": "Q2 background",
+     "refId": "C"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "panopticon-prom"
+     },
+     "expr": "panopticon_mlfq_depth{queue=\"goal\"}",
+     "legendFormat": "Q3 goal",
+     "refId": "D"
+    }
+   ]
+  },
+  {
+   "id": 4,
+   "type": "timeseries",
+   "title": "Tick Overrun (must be ~0)",
+   "description": "The 20 Hz heartbeat. Any sustained value above the red line means an await leaked into a hot pass \u2014 run phase11_audit.py before blaming hardware.",
+   "gridPos": {
+    "h": 9,
+    "w": 12,
+    "x": 12,
+    "y": 9
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "panopticon-prom"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "ms",
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 8,
+      "showPoints": "never",
+      "spanNulls": true,
+      "thresholdsStyle": {
+       "mode": "line"
+      }
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "red",
+        "value": 5
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "panopticon-prom"
+     },
+     "expr": "panopticon_tick_max_overrun_ms",
+     "legendFormat": "max overrun",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "panopticon-prom"
+     },
+     "expr": "rate(panopticon_ticks_total[30s])",
+     "legendFormat": "tick rate (Hz)",
+     "refId": "B"
+    }
+   ]
+  }
+ ]
+}

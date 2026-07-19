@@ -1,0 +1,12 @@
+# Auto-provisioned on container boot — zero UI interaction.
+apiVersion: 1
+datasources:
+  - name: Panopticon Prometheus
+    uid: panopticon-prom
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 5s          # match the scrape cadence or panels alias

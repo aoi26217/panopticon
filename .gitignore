@@ -1,0 +1,27 @@
+# --- SECRETS — the reason this file exists -----------------------------------
+.env
+deploy/.env
+*.env
+!.env.example
+
+# --- Runtime data (contains simulation state & agent memory payloads) --------
+*.jsonl                     # dead-letter files: raw graph mutations
+state.json
+cycle-*.json
+prof_*.json                 # profiler reports (embed internal endpoint URLs)
+/workspace/
+
+# --- Python ------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+.cache/
+
+# --- Unreal / editor debris --------------------------------------------------
+glasshouse/Binaries/
+glasshouse/Intermediate/
+glasshouse/Saved/
+glasshouse/DerivedDataCache/
+*.uasset
+.vscode/
+.idea/

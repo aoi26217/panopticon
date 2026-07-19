@@ -1,0 +1,239 @@
+# ============================================================================
+# Project Panopticon — Phase 5 RunPod Deployment
+# docker-compose-runpod.yml
+#
+# Target: one RunPod bare-metal / secure-cloud host with 4× A100 80GB and the
+# NVIDIA Container Toolkit. (8× RTX 4090 variant: see GPU PARTITION notes.)
+#
+# GPU PARTITION (strict — every service pins device_ids, nothing floats):
+#   GPU 0,1  sglang        Qwen3-8B, tensor-parallel TP=2. An 8B at TP=2 on
+#                          A100s leaves ~130 GB of KV headroom — that's what
+#                          buys 50-agent RadixAttention trees + AIMD's probing.
+#   GPU 2    embeddings    TEI serving BAAI/bge-m3 (OpenAI-compatible
+#            + f5-tts      /v1/embeddings) co-located with the F5-TTS
+#                          microservice (2–3 GB FP16): both are small, bursty,
+#                          latency-sensitive — good roommates.
+#   GPU 3    RESERVED      headroom. First use when metrics demand it:
+#                          promote sglang to TP=4 (0,1,2,3 — relocate GPU 2
+#                          services) OR pin a second decode-heavy replica.
+#   CPU/RAM  qdrant, neo4j, orchestrator, livekit, prometheus, grafana
+#
+#   8× RTX 4090 variant: sglang TP=4 on 0–3 (24 GB cards need the split),
+#   embeddings on 4, f5-tts on 5, 6–7 reserved.
+#
+# DURABILITY (everything stateful lives under /workspace — RunPod's
+# persistent volume — and survives pod restarts):
+#   ${PANOPTICON_WORKSPACE:-/workspace}/models        HF model cache (saves 10+ min per cold start)
+#   ${PANOPTICON_WORKSPACE:-/workspace}/qdrant        vector store (episodic + consolidated memories)
+#   ${PANOPTICON_WORKSPACE:-/workspace}/neo4j/*       graph data, logs, transaction logs
+#   ${PANOPTICON_WORKSPACE:-/workspace}/deadletter    the orchestrator's replayable JSONL dead letters
+#
+# STARTUP ORDER (enforced via healthchecks, not sleep-and-pray):
+#   qdrant, neo4j, sglang, embeddings, f5-tts → healthy → orchestrator
+# ============================================================================
+
+name: panopticon
+
+x-gpu: &gpu-base
+  restart: unless-stopped
+  ulimits:
+    memlock: -1
+    stack: 67108864
+
+services:
+
+  # ------------------------------------------------------------ inference
+  sglang:
+    <<: *gpu-base
+    image: lmsysorg/sglang:latest
+    command: >
+      python3 -m sglang.launch_server
+      --model-path Qwen/Qwen3-8B
+      --tp 2
+      --host 0.0.0.0 --port 8000
+      --mem-fraction-static 0.88
+      --enable-metrics
+      --schedule-conservativeness 0.3
+    # --schedule-conservativeness LOW on purpose: our AIMD limiter is the
+    # admission controller; the server should accept what we send and expose
+    # pressure via latency, which AIMD reads as its congestion signal.
+    environment:
+      HF_HOME: /models
+    volumes:
+      - ${PANOPTICON_WORKSPACE:-/workspace}/models:/models
+    shm_size: 32g
+    ports: ["8000:8000"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0", "1"]
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 40          # model load takes minutes on a cold cache
+      start_period: 300s
+
+  # ----------------------------------------------------------- embeddings
+  embeddings:
+    <<: *gpu-base
+    image: ghcr.io/huggingface/text-embeddings-inference:latest
+    command: --model-id BAAI/bge-m3 --port 8080
+    environment:
+      HF_HOME: /models
+    volumes:
+      - ${PANOPTICON_WORKSPACE:-/workspace}/models:/models
+    ports: ["8080:8080"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["2"]
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 120s
+
+  # ------------------------------------------------------------------ tts
+  f5-tts:
+    <<: *gpu-base
+    build:
+      context: .
+      dockerfile: Dockerfile.f5tts        # thin wrapper exposing the
+    # POST /synthesize contract from media.RealTTSEngine's docstring:
+    # {"text","voice","format":"pcm_s16le","sample_rate"} → chunked PCM.
+    environment:
+      HF_HOME: /models
+    volumes:
+      - ${PANOPTICON_WORKSPACE:-/workspace}/models:/models
+    ports: ["8020:8020"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["2"]           # co-located with embeddings
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8020/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 120s
+
+  # ---------------------------------------------------------- state stores
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    volumes:
+      - ${PANOPTICON_WORKSPACE:-/workspace}/qdrant:/qdrant/storage
+    ports: ["6333:6333"]
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
+  neo4j:
+    image: neo4j:5-community
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?set NEO4J_PASSWORD in .env}
+      NEO4J_server_memory_heap_initial__size: 4g
+      NEO4J_server_memory_heap_max__size: 8g
+      NEO4J_server_memory_pagecache_size: 6g
+    volumes:
+      - ${PANOPTICON_WORKSPACE:-/workspace}/neo4j/data:/data
+      - ${PANOPTICON_WORKSPACE:-/workspace}/neo4j/logs:/logs
+    ports: ["7474:7474", "7687:7687"]
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p $${NEO4J_AUTH#*/} 'RETURN 1' || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+
+  # --------------------------------------------------------------- media
+  livekit:
+    image: livekit/livekit-server:latest
+    restart: unless-stopped
+    command: --dev --bind 0.0.0.0     # --dev for the crucible pod; swap in a
+    ports:                            # keyed config + TURN for public observers
+      - "7880:7880"
+      - "7881:7881"
+      - "50000-50100:50000-50100/udp"
+    profiles: ["media"]               # crucible runs bypass this: omit
+                                      # --profile media and it never starts
+
+  # --------------------------------------------------------- orchestrator
+  orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile.orchestrator
+    restart: unless-stopped
+    command: >
+      python3 tick_engine.py
+      --agents 50
+      --sglang-url        http://sglang:8000
+      --neo4j-uri         bolt://neo4j:7687
+      --neo4j-password    ${NEO4J_PASSWORD}
+      --qdrant-url        http://qdrant:6333
+      --embeddings-url    http://embeddings:8080
+      --consolidate
+      --goals
+      --navmesh --map-file /app/maps/plaza.json
+      --snapshot-path /app/state/state.json
+      --director
+      --metrics-port 9109
+    # For a media-enabled run, append:
+    #   --livekit-url ws://livekit:7880 --livekit-api-key devkey
+    #   --livekit-api-secret secret --tts-url http://f5-tts:8020
+    # For a crucible run, override the entrypoint:
+    #   docker compose run --rm orchestrator python3 crucible.py
+    #     --sglang-url http://sglang:8000 ... --metrics-port 9109
+    volumes:
+      - ${PANOPTICON_WORKSPACE:-/workspace}/deadletter:/app/deadletter
+      - ${PANOPTICON_WORKSPACE:-/workspace}/state:/app/state          # snapshot survives pod restarts
+      - ./maps:/app/maps:ro                  # plaza geometry (JSON rects)
+    working_dir: /app
+    environment:
+      DEAD_LETTER_DIR: /app/deadletter
+    ports: ["9109:9109"]
+    depends_on:
+      sglang:      { condition: service_healthy }
+      embeddings:  { condition: service_healthy }
+      qdrant:      { condition: service_healthy }
+      neo4j:       { condition: service_healthy }
+
+  # -------------------------------------------------------- observability
+  prometheus:
+    image: prom/prometheus:latest
+    restart: unless-stopped
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ${PANOPTICON_WORKSPACE:-/workspace}/prometheus:/prometheus
+    ports: ["9090:9090"]
+    profiles: ["obs"]
+
+  grafana:
+    image: grafana/grafana:latest
+    restart: unless-stopped
+    environment:
+      # Anonymous admin is a PRIVATE-POD convenience only. Default: off.
+      GF_AUTH_ANONYMOUS_ENABLED: ${GRAFANA_ANONYMOUS:-false}
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set in .env}
+    volumes:
+      - ${PANOPTICON_WORKSPACE:-/workspace}/grafana:/var/lib/grafana
+      # Dashboards-as-code: provisioned on boot, zero UI interaction.
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["3000:3000"]
+    profiles: ["obs"]

@@ -1,0 +1,10 @@
+# Panopticon orchestrator: pure-CPU asyncio process. No torch, no CUDA —
+# all GPU work lives behind HTTP (sglang / embeddings / f5-tts services).
+FROM python:3.12-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY tick_engine.py clients.py media.py memory.py consolidation.py \
+     metrics.py crucible.py ./
+# The engine is the default; the crucible is `docker compose run` (see compose).
+CMD ["python3", "tick_engine.py", "--agents", "50"]

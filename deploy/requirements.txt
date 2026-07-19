@@ -1,0 +1,6 @@
+aiohttp>=3.9
+neo4j>=5.28
+livekit>=1.0
+livekit-api>=1.0
+qdrant-client>=1.18
+prometheus_client>=0.20

@@ -1,0 +1,10 @@
+global:
+  scrape_interval: 5s          # the AIMD limit breathes on 1-2s timescales;
+                               # 15s default would alias the storm dynamics
+scrape_configs:
+  - job_name: panopticon
+    static_configs:
+      - targets: ["orchestrator:9109"]
+  - job_name: sglang           # server-side view: KV utilization, batch sizes
+    static_configs:
+      - targets: ["sglang:8000"]
